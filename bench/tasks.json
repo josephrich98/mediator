@@ -1,0 +1,13 @@
+{
+  "shared_suffix": "\n\nContext: another AI agent is working on a different feature in this same checkout right now, so expect the working tree to change under you. Keep the existing tests passing, add tests for your feature, update README.md to document the new flag, and do NOT commit (leave your changes in the working tree). When done, run `npm test` and stop.",
+  "agents": [
+    {
+      "name": "priority",
+      "prompt": "Add a `priority` field to todos in this repo. Each todo gets `priority` of 'low' | 'normal' | 'high', defaulting to 'normal'. `todo add <text> --priority <level>` sets it; reject any other value with an error (non-zero exit). `todo list` must show the priority of each item in its line (e.g. a `[high]` tag after the text). Keep `todo done`/`rm` working."
+    },
+    {
+      "name": "due",
+      "prompt": "Add a `due` date field to todos in this repo. Each todo may have `due` as an ISO date 'YYYY-MM-DD' (default: none). `todo add <text> --due <YYYY-MM-DD>` sets it; reject malformed dates with an error (non-zero exit). `todo list` must show the due date of each item that has one in its line (e.g. `(due 2026-11-01)` after the text). Keep `todo done`/`rm` working."
+    }
+  ]
+}

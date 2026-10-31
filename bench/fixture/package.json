@@ -1,0 +1,7 @@
+{
+  "name": "todo-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Tiny todo CLI used as a benchmark fixture",
+  "scripts": { "test": "node --test" }
+}
