@@ -4,6 +4,7 @@
  * Benchmark: two headless Claude Code agents (Sonnet) edit overlapping files in one checkout,
  * with and without mediator. Usage:
  *   node bench/run.js --condition baseline|mediator [--trials 3] [--model claude-sonnet-5-5] [--max-turns 60] [--stagger 5]
+ *                     [--tasks bench/tasks-hard.json --check bench/check-hard.js --tag hard]
  * Results: bench/runs/<condition>/<trial>/ (per-agent stream logs, check.json, summary.json) and bench/results.jsonl
  */
 const fs = require('fs'), path = require('path'), cp = require('child_process'), os = require('os');
@@ -17,8 +18,12 @@ const BUDGET = +(args.budget || 4); // USD per agent
 const ROOT = path.resolve(__dirname, '..');
 const BIN = path.join(ROOT, 'bin', 'mediator.js');
 const FIXTURE = path.join(__dirname, 'fixture');
-const RUNS = path.join(__dirname, 'runs', COND);
-const tasks = JSON.parse(fs.readFileSync(path.join(__dirname, 'tasks.json'), 'utf8'));
+const TAG = args.tag || 'default';
+const RUNS = path.join(__dirname, 'runs', TAG, COND);
+const TASKS_FILE = path.resolve(args.tasks || path.join(__dirname, 'tasks.json'));
+const CHECK = path.resolve(args.check || path.join(__dirname, 'check.js'));
+const RESULTS = path.join(__dirname, TAG === 'default' ? 'results.jsonl' : `results-${TAG}.jsonl`);
+const tasks = JSON.parse(fs.readFileSync(TASKS_FILE, 'utf8'));
 const CONFIG_DIR = path.join(os.tmpdir(), 'mediator-bench-claude-config');
 fs.mkdirSync(CONFIG_DIR, { recursive: true });
 
@@ -102,7 +107,7 @@ function parseStream(file) {
     }
     const exits = await Promise.all(runs);
     const wall_ms = Date.now() - t0;
-    let check; try { check = JSON.parse(sh(`node ${JSON.stringify(path.join(__dirname, 'check.js'))} ${JSON.stringify(work)}`, ROOT)); } catch (e) { check = { score: 0, max: 18, error: String(e.stdout || e) }; }
+    let check; try { check = JSON.parse(sh(`node ${JSON.stringify(CHECK)} ${JSON.stringify(work)}`, ROOT)); } catch (e) { check = { score: 0, max: 18, error: String(e.stdout || e) }; }
     fs.writeFileSync(path.join(trialDir, 'check.json'), JSON.stringify(check, null, 2));
     const agents = {};
     for (const a of tasks.agents) agents[a.name] = { ...parseStream(path.join(trialDir, `${a.name}.jsonl`)), exit: exits.find(e => e.name === a.name) };
@@ -110,7 +115,7 @@ function parseStream(file) {
     const usage = Object.values(agents).map(a => a.result && a.result.usage || {});
     const sum = k => usage.reduce((n, u) => n + (u[k] || 0), 0);
     const summary = {
-      condition: COND, trial: stamp, model: MODEL, wall_ms,
+      condition: COND, tag: TAG, trial: stamp, model: MODEL, wall_ms,
       cost_usd: +Object.values(agents).reduce((n, a) => n + ((a.result && a.result.cost_usd) || 0), 0).toFixed(4),
       output_tokens: sum('output_tokens'), input_tokens: sum('input_tokens') + sum('cache_creation_input_tokens') + sum('cache_read_input_tokens'),
       cache_read_tokens: sum('cache_read_input_tokens'),
@@ -125,7 +130,7 @@ function parseStream(file) {
       agents,
     };
     fs.writeFileSync(path.join(trialDir, 'summary.json'), JSON.stringify(summary, null, 2));
-    fs.appendFileSync(path.join(__dirname, 'results.jsonl'), JSON.stringify({ ...summary, agents: undefined }) + '\n');
+    fs.appendFileSync(RESULTS, JSON.stringify({ ...summary, agents: undefined }) + '\n');
     console.log(`  wall ${(wall_ms / 1000).toFixed(0)}s  cost $${summary.cost_usd}  out_tokens ${summary.output_tokens}  turns ${summary.turns}  tool_errors ${summary.tool_errors} ${JSON.stringify(summary.error_kinds)}  red_tests_seen ${summary.test_failures_seen}  blocks ${summary.mediator_blocks}  score ${summary.score}/${summary.max}  tests ${JSON.stringify(summary.tests)}`);
   }
 })();

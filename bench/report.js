@@ -2,7 +2,7 @@
 'use strict';
 // Aggregate bench/results.jsonl into a markdown table (mean ± sd per condition).
 const fs = require('fs'), path = require('path');
-const rows = fs.readFileSync(path.join(__dirname, 'results.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
+const rows = fs.readFileSync(path.resolve(process.argv[2] || path.join(__dirname, 'results.jsonl')), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
 const by = {}; for (const r of rows) (by[r.condition] = by[r.condition] || []).push(r);
 const stat = (xs) => { const m = xs.reduce((a, b) => a + b, 0) / xs.length; const sd = Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / Math.max(1, xs.length - 1)); return { m, sd }; };
 const fmt = (xs, d = 0, unit = '') => { const { m, sd } = stat(xs); return `${m.toFixed(d)}${unit} ± ${sd.toFixed(d)}`; };

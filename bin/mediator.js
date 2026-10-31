@@ -17,7 +17,7 @@ const path = require('path');
 const os = require('os');
 const cp = require('child_process');
 
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 const TTL_SEC = parseInt(process.env.MEDIATOR_TTL_SEC || '', 10) || 900; // reservation TTL
 const TTL_MS = TTL_SEC * 1000;
 const HOST = os.hostname();
@@ -245,6 +245,28 @@ function label(a, me) {
   return a.plan ? `${tag} "${a.plan}"` : tag;
 }
 
+/**
+ * Wait-for cycle detection. Returns {holder, wants} if the holder of `claim` is (transitively)
+ * waiting for a file that `me` holds. Deterministic tie-break: the agent that joined later yields.
+ */
+function detectDeadlock(st, me, claim) {
+  let holderId = claim && claim.agent, seen = new Set();
+  for (let depth = 0; holderId && depth < 8 && !seen.has(holderId); depth++) {
+    seen.add(holderId);
+    const holder = st.getAgent(holderId);
+    if (!holder || !st.isPresent(holder) || !holder.waiting_for) return null;
+    const wc = st.getClaim(holder.waiting_for);
+    if (!wc || !st.claimValid(wc)) return null;
+    if (wc.agent === me) return { holder: st.getAgent(claim.agent), wants: holder.waiting_for, direct: depth === 0 };
+    holderId = wc.agent;
+  }
+  return null;
+}
+function iYield(me, other) {
+  const a = (me && me.started) || 0, b = (other && other.started) || 0;
+  return a !== b ? a > b : String(me.id) > String(other.id);
+}
+
 // ---------------------------------------------------------------- rendering
 function renderStatus(st, me, { compact = false } = {}) {
   const present = st.gc();
@@ -260,7 +282,8 @@ function renderStatus(st, me, { compact = false } = {}) {
     const cs = (byAgent[a.id] || []).sort((x, y) => x.path.localeCompare(y.path));
     const files = cs.map(c => c.path + (c.modified ? '*' : '')).join(' ');
     const idle = a.id === me ? '' : `, active ${ago(a.heartbeat)}`;
-    lines.push(`  ${label(a, me)}${idle}${cs.length ? ` — ${cs.length} file${cs.length === 1 ? '' : 's'}: ${files}` : ' — no files claimed'}`);
+    const waiting = a.waiting_for ? ` — waiting for ${a.waiting_for}` : '';
+    lines.push(`  ${label(a, me)}${idle}${cs.length ? ` — ${cs.length} file${cs.length === 1 ? '' : 's'}: ${files}` : ' — no files claimed'}${waiting}`);
   }
   if (claims.some(c => c.modified)) lines.push('  (* = has uncommitted edits by that agent; wait for release before touching)');
   // recent notes from others
@@ -302,7 +325,7 @@ const BRIEF = (others, cmd) => [
   'Hooks enforce file ownership: a file you Edit/Write is claimed for you automatically; editing a file another agent holds is blocked (you will be told who has it). Edit files with the Edit/Write tools, not shell scripts, so ownership is tracked.',
   `Protocol (cheap, do it): 1) Before your first edit run \`${cmd} plan "<one-line goal>" <files you expect to touch>\`.`,
   `2) If you change a shared interface (signature, schema, CLI flag, export), run \`${cmd} note "<what changed>"\`.`,
-  `3) If blocked: work on your other files first, or \`${cmd} wait <file>\` (blocks until free), then re-read the file before editing.`,
+  `3) If blocked: work on your other files first, or \`${cmd} wait <file>\` (blocks until free), then re-read the file before editing. When you are done with a file others may need, \`${cmd} release <file>\` early.`,
   `4) Never run git stash/reset/checkout/restore on the whole tree or \`git add -A\`: other agents have uncommitted work here. \`${cmd} status\` shows who holds what.`,
 ].join('\n');
 
@@ -387,13 +410,29 @@ const commands = {
     const me = needSelf(st, flags);
     const files = pos.map(f => st.rel(f)).filter(Boolean);
     if (!files.length) die('usage: mediator claim <files...> [--wait] [--timeout SEC] [--steal]');
-    const deadline = NOW() + (parseInt(flags.timeout, 10) || 300) * 1000;
+    const deadline = NOW() + (parseInt(flags.timeout, 10) || 180) * 1000;
     const lines = [];
     for (const f of files) {
       let r = st.tryClaim(f, me, { steal: !!flags.steal });
-      if (!r.ok && (flags.wait || flags.command === 'wait')) {
+      if (!r.ok && flags.wait) {
         process.stderr.write(`mediator: waiting for ${f} (held by ${r.owner ? label(r.owner, me) : '?'})…\n`);
-        while (!r.ok && NOW() < deadline) { sleepMs(1500); r = st.tryClaim(f, me); }
+        const meRec = ensureAgent(st, me, { waiting_for: f });
+        let deadlocked = null;
+        while (!r.ok && NOW() < deadline) {
+          const dl = detectDeadlock(st, me, r.claim);
+          if (dl && iYield(meRec, dl.holder)) { deadlocked = dl; break; }
+          sleepMs(1500); r = st.tryClaim(f, me);
+        }
+        ensureAgent(st, me, { waiting_for: null });
+        if (deadlocked) {
+          st.log({ agent: me, type: 'deadlock', path: f, wants: deadlocked.wants, holder: deadlocked.holder.id });
+          lines.push([
+            `DEADLOCK on ${f}: it is held by ${label(deadlocked.holder, me)}, who is waiting for ${deadlocked.wants}, which YOU hold. You joined later, so you yield.`,
+            `Do now: finish any in-progress edit to ${deadlocked.wants}, run \`${st.cmd} release ${deadlocked.wants}\`, then run \`${st.cmd} wait ${f}\` again (they will release it when their turn ends).`,
+          ].join('\n'));
+          process.exitCode = 4;
+          continue;
+        }
       }
       if (r.ok) {
         const handed = st.readLog(0).events.some(e => e.type === 'handoff' && e.agent !== me && (e.modified || []).includes(f));

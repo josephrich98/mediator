@@ -1,0 +1,17 @@
+{
+  "shared_suffix": "\n\nContext: other AI agents are working on different tasks in this same checkout right now, so expect the working tree to change under you. Keep the existing tests passing, add tests for your work, update README.md where relevant, and do NOT commit (leave your changes in the working tree). Do the two parts in order; finish by running `npm test` and making sure it is green.",
+  "agents": [
+    {
+      "name": "esm-async",
+      "prompt": "Part 1: Migrate this whole project from CommonJS to ES modules: set \"type\": \"module\" in package.json, convert every file in src/ and test/ to import/export syntax (no require/module.exports anywhere), fix require.main usage in src/cli.js (use import.meta.url), and keep `node src/cli.js ...` and `npm test` working.\n\nPart 2: Refactor the Store class in src/store.js to an async API: every method that touches the filesystem (load, save, add, complete, remove) must return a Promise and use fs.promises instead of sync fs calls; the constructor must not perform I/O, and callers obtain a store via `static async open(file)`. Update src/cli.js (make main async), all tests, and document the API in README.md."
+    },
+    {
+      "name": "rename-due",
+      "prompt": "Part 1: Rename the todo field `text` to `title` throughout this project: the stored JSON field, Store.add, the formatter, the CLI output, all tests, and README.md. Store.load must still accept old files whose items have `text` (migrate them to `title` on load). After this, no code in src/ or test/ should reference `.text` or `text:` for todos.\n\nPart 2: Add a `due` date field to todos. Each todo may have `due` as an ISO date 'YYYY-MM-DD' (default: none). `todo add <title> --due <YYYY-MM-DD>` sets it; reject malformed dates with an error (non-zero exit). `todo list` must show the due date of each item that has one (e.g. `(due 2026-11-01)` after the title), and `todo list --overdue` must show only items whose due date is before today and are not done."
+    },
+    {
+      "name": "priority-json",
+      "prompt": "Part 1: Add a `priority` field to todos. Each todo gets `priority` of 'low' | 'normal' | 'high', defaulting to 'normal'. `todo add <text> --priority <level>` sets it; reject any other value with an error (non-zero exit). `todo list` must show the priority of each item (e.g. a `[high]` tag), `todo list --priority <level>` must filter to that level, and the list must be sorted high → normal → low (stable within a level).\n\nPart 2: Add `todo list --json`, which prints the (filtered, sorted) items as a JSON array instead of the formatted list, and `todo edit <id> <new text>` which replaces an item's text/title and prints the updated item. Keep `todo done`/`rm` working."
+    }
+  ]
+}

@@ -106,6 +106,22 @@ test('dead agent claims are reclaimable; concurrent claimers: exactly one wins',
   });
 });
 
+test('wait detects a circular wait and tells the later agent to yield within seconds', () => {
+  const d = mk();
+  run(d, ['plan', 'first', 'a.js'], { as: 'A' });
+  // A is waiting for b.js, which B holds; B then waits for a.js -> cycle. B joined later -> B yields.
+  const aRec = JSON.parse(fs.readFileSync(path.join(d, '.mediator', 'agents', 'A.json'), 'utf8'));
+  aRec.started -= 5000; aRec.waiting_for = 'b.js'; fs.writeFileSync(path.join(d, '.mediator', 'agents', 'A.json'), JSON.stringify(aRec));
+  run(d, ['plan', 'second', 'b.js'], { as: 'B' });
+  const t0 = Date.now();
+  const r = run(d, ['wait', 'a.js', '--timeout', '60'], { as: 'B' });
+  assert.ok(Date.now() - t0 < 10000, 'returned quickly, did not wait for timeout');
+  assert.equal(r.code, 4);
+  assert.match(r.out, /DEADLOCK on a.js/); assert.match(r.out, /release b.js/);
+  // B's waiting_for was cleared
+  assert.equal(JSON.parse(fs.readFileSync(path.join(d, '.mediator', 'agents', 'B.json'), 'utf8')).waiting_for, null);
+});
+
 test('hook is a silent no-op when mediator is not initialized', () => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'mediator-none-'));
   const r = run(d, ['hook', 'pre-edit'], { stdin: hookIn('A', { cwd: d, tool_input: { file_path: 'x.js' } }) });

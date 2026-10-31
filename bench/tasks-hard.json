@@ -1,0 +1,17 @@
+{
+  "shared_suffix": "\n\nContext: other AI agents are working on different tasks in this same checkout right now, so expect the working tree to change under you. Keep the existing tests passing, add tests for your work, update README.md where relevant, and do NOT commit (leave your changes in the working tree). Finish by running `npm test` and making sure it is green.",
+  "agents": [
+    {
+      "name": "esm",
+      "prompt": "Migrate this whole project from CommonJS to ES modules: set \"type\": \"module\" in package.json, convert every file in src/ and test/ to import/export syntax (no require/module.exports anywhere), fix __dirname/require.main usage in src/cli.js (use import.meta.url), and keep `node src/cli.js ...` and `npm test` working."
+    },
+    {
+      "name": "rename",
+      "prompt": "Rename the todo field `text` to `title` throughout this project: the stored JSON field, Store.add's behaviour, the formatter, the CLI output, all tests, and README.md. Store.load must still accept old files whose items have `text` (migrate them to `title` on load). After this, no code in src/ or test/ should reference `.text` or `text:` for todos."
+    },
+    {
+      "name": "priority",
+      "prompt": "Add a `priority` field to todos in this repo. Each todo gets `priority` of 'low' | 'normal' | 'high', defaulting to 'normal'. `todo add <text> --priority <level>` sets it; reject any other value with an error (non-zero exit). `todo list` must show the priority of each item in its line (e.g. a `[high]` tag), `todo list --priority <level>` must show only items with that priority, and the list must be sorted high → normal → low (stable within a level). Keep `todo done`/`rm` working."
+    }
+  ]
+}
