@@ -1,13 +1,17 @@
 {
-  "shared_suffix": "\n\nContext: another AI agent is working on a different feature in this same checkout right now, so expect the working tree to change under you. Keep the existing tests passing, add tests for your feature, update README.md to document the new flag, and do NOT commit (leave your changes in the working tree). When done, run `npm test` and stop.",
+  "shared_suffix": "\n\nContext: other AI agents are working on different tasks in this same checkout right now, so expect the working tree to change under you. Keep the existing tests passing, add tests for your work, update README.md where relevant, and do NOT commit (leave your changes in the working tree). Finish by running `npm test` and making sure it is green.",
   "agents": [
     {
+      "name": "async",
+      "prompt": "Refactor the Store class in src/store.js to an async API: every method that touches the filesystem (load, save, add, complete, remove) must return a Promise and use fs.promises instead of the sync fs calls; the constructor must not perform I/O, and callers obtain a store via `static async open(file)` which loads it. Update src/cli.js (make main async) and all existing tests to the new API, and document the new API in README.md under 'Data model'."
+    },
+    {
       "name": "priority",
-      "prompt": "Add a `priority` field to todos in this repo. Each todo gets `priority` of 'low' | 'normal' | 'high', defaulting to 'normal'. `todo add <text> --priority <level>` sets it; reject any other value with an error (non-zero exit). `todo list` must show the priority of each item in its line (e.g. a `[high]` tag after the text). Keep `todo done`/`rm` working."
+      "prompt": "Add a `priority` field to todos in this repo. Each todo gets `priority` of 'low' | 'normal' | 'high', defaulting to 'normal'. `todo add <text> --priority <level>` sets it; reject any other value with an error (non-zero exit). `todo list` must show the priority of each item in its line (e.g. a `[high]` tag after the text), and `todo list --priority <level>` must show only items with that priority. Keep `todo done`/`rm` working."
     },
     {
       "name": "due",
-      "prompt": "Add a `due` date field to todos in this repo. Each todo may have `due` as an ISO date 'YYYY-MM-DD' (default: none). `todo add <text> --due <YYYY-MM-DD>` sets it; reject malformed dates with an error (non-zero exit). `todo list` must show the due date of each item that has one in its line (e.g. `(due 2026-11-01)` after the text). Keep `todo done`/`rm` working."
+      "prompt": "Add a `due` date field to todos in this repo. Each todo may have `due` as an ISO date 'YYYY-MM-DD' (default: none). `todo add <text> --due <YYYY-MM-DD>` sets it; reject malformed dates with an error (non-zero exit). `todo list` must show the due date of each item that has one in its line (e.g. `(due 2026-11-01)` after the text), and `todo list --overdue` must show only items whose due date is before today and are not done. Keep `todo done`/`rm` working."
     }
   ]
 }

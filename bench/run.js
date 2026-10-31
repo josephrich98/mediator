@@ -41,7 +41,9 @@ function setupWork(trialDir) {
 function runAgent(work, agent, outFile) {
   const prompt = agent.prompt + tasks.shared_suffix;
   const argv = ['-p', prompt, '--model', MODEL, '--output-format', 'stream-json', '--verbose', '--max-turns', String(MAX_TURNS),
-    '--max-budget-usd', String(BUDGET), '--dangerously-skip-permissions', '--setting-sources', 'project', '--no-session-persistence'];
+    '--max-budget-usd', String(BUDGET), '--setting-sources', 'project', '--no-session-persistence',
+    // acceptEdits (not bypass) so agents use the Edit/Write tools like interactive sessions do; Bash is allow-listed.
+    '--permission-mode', 'acceptEdits', '--allowedTools', 'Bash', 'Edit', 'Write', 'Read', 'Glob', 'Grep', 'MultiEdit', 'Skill'];
   const t0 = Date.now();
   const outFd = fs.openSync(outFile, 'w');
   const child = cp.spawn('claude', argv, { cwd: work, env, stdio: ['ignore', outFd, fs.openSync(outFile + '.stderr', 'w')] });
@@ -50,7 +52,7 @@ function runAgent(work, agent, outFile) {
 
 function parseStream(file) {
   const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
-  const s = { turns: 0, tool_uses: {}, tool_errors: 0, error_kinds: {}, mediator_blocks: 0, mediator_cmds: 0, result: null, text_chars: 0 };
+  const s = { turns: 0, tool_uses: {}, tool_errors: 0, error_kinds: {}, mediator_blocks: 0, mediator_cmds: 0, test_failures_seen: 0, result: null, text_chars: 0 };
   const pending = {}; // tool_use_id -> name
   for (const l of lines) {
     let m; try { m = JSON.parse(l); } catch { continue; }
@@ -66,6 +68,7 @@ function parseStream(file) {
       for (const c of m.message.content) {
         if (c.type !== 'tool_result') continue;
         const txt = typeof c.content === 'string' ? c.content : JSON.stringify(c.content || '');
+        if (/ℹ fail [1-9]/.test(txt) || /# fail [1-9]/.test(txt)) s.test_failures_seen++;
         if (c.is_error) {
           s.tool_errors++;
           const kind = /mediator: BLOCKED/.test(txt) ? 'mediator_blocked'
@@ -116,11 +119,13 @@ function parseStream(file) {
       error_kinds: Object.values(agents).reduce((acc, a) => { for (const [k, v] of Object.entries(a.error_kinds)) acc[k] = (acc[k] || 0) + v; return acc; }, {}),
       mediator_blocks: Object.values(agents).reduce((n, a) => n + a.mediator_blocks, 0),
       mediator_cmds: Object.values(agents).reduce((n, a) => n + a.mediator_cmds, 0),
+      test_failures_seen: Object.values(agents).reduce((n, a) => n + a.test_failures_seen, 0),
+      max_turns_hit: Object.values(agents).filter(a => a.result && a.result.subtype && a.result.subtype !== 'success').length,
       score: check.score, max: check.max, tests: check.note && check.note.tests, failed_checks: Object.entries(check.checks || {}).filter(([, v]) => !v).map(([k]) => k),
       agents,
     };
     fs.writeFileSync(path.join(trialDir, 'summary.json'), JSON.stringify(summary, null, 2));
     fs.appendFileSync(path.join(__dirname, 'results.jsonl'), JSON.stringify({ ...summary, agents: undefined }) + '\n');
-    console.log(`  wall ${(wall_ms / 1000).toFixed(0)}s  cost $${summary.cost_usd}  out_tokens ${summary.output_tokens}  turns ${summary.turns}  tool_errors ${summary.tool_errors} ${JSON.stringify(summary.error_kinds)}  score ${summary.score}/${summary.max}  tests ${JSON.stringify(summary.tests)}`);
+    console.log(`  wall ${(wall_ms / 1000).toFixed(0)}s  cost $${summary.cost_usd}  out_tokens ${summary.output_tokens}  turns ${summary.turns}  tool_errors ${summary.tool_errors} ${JSON.stringify(summary.error_kinds)}  red_tests_seen ${summary.test_failures_seen}  blocks ${summary.mediator_blocks}  score ${summary.score}/${summary.max}  tests ${JSON.stringify(summary.tests)}`);
   }
 })();

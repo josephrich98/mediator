@@ -71,7 +71,11 @@ class State {
     this.agentsDir = path.join(this.dir, 'agents');
     this.claimsDir = path.join(this.dir, 'claims');
     this.logFile = path.join(this.dir, 'log.jsonl');
+    this._cfg = null;
   }
+  get cfg() { if (!this._cfg) this._cfg = readJSON(path.join(this.dir, 'config.json'), {}); return this._cfg; }
+  /** How agents should invoke mediator in this repo (same prefix the hooks use). */
+  get cmd() { return this.cfg.cmd || 'mediator'; }
   get enabled() { return fs.existsSync(this.dir); }
   ensure() {
     fs.mkdirSync(this.agentsDir, { recursive: true });
@@ -293,13 +297,13 @@ function renderInbox(st, me, { advance = true } = {}) {
   return lines.length ? `mediator — updates from other agents:\n- ${lines.join('\n- ')}` : '';
 }
 
-const BRIEF = (others) => [
+const BRIEF = (others, cmd) => [
   `mediator is active: ${others} other agent${others === 1 ? ' is' : 's are'} working in this repo right now.`,
-  'Hooks enforce file ownership: a file you Edit/Write is claimed for you automatically; editing a file another agent holds is blocked (you will be told who has it).',
-  'Protocol (cheap, do it): 1) Before your first edit run `mediator plan "<one-line goal>" <files you expect to touch>`.',
-  '2) If you change a shared interface (signature, schema, CLI flag, export), run `mediator note "<what changed>"`.',
-  '3) If blocked: work on your other files first, or `mediator wait <file>` (blocks until free), then re-read the file before editing.',
-  '4) Never run git stash/reset/checkout/restore on the whole tree or `git add -A`: other agents have uncommitted work here. `mediator status` shows who holds what.',
+  'Hooks enforce file ownership: a file you Edit/Write is claimed for you automatically; editing a file another agent holds is blocked (you will be told who has it). Edit files with the Edit/Write tools, not shell scripts, so ownership is tracked.',
+  `Protocol (cheap, do it): 1) Before your first edit run \`${cmd} plan "<one-line goal>" <files you expect to touch>\`.`,
+  `2) If you change a shared interface (signature, schema, CLI flag, export), run \`${cmd} note "<what changed>"\`.`,
+  `3) If blocked: work on your other files first, or \`${cmd} wait <file>\` (blocks until free), then re-read the file before editing.`,
+  `4) Never run git stash/reset/checkout/restore on the whole tree or \`git add -A\`: other agents have uncommitted work here. \`${cmd} status\` shows who holds what.`,
 ].join('\n');
 
 // ---------------------------------------------------------------- commands
@@ -339,6 +343,7 @@ const commands = {
       const settingsPath = flags.settings ? path.resolve(flags.settings) : path.join(root, '.claude', 'settings.json');
       const cmd = flags.command || hookCommand();
       const res = installHooks(settingsPath, cmd);
+      writeJSONAtomic(path.join(st.dir, 'config.json'), { ...readJSON(path.join(st.dir, 'config.json'), {}), cmd });
       done.push(`${res} hooks in ${path.relative(process.cwd(), settingsPath)} (command: ${cmd} hook <event>)`);
     }
     if (!flags['no-skill']) {
@@ -372,7 +377,7 @@ const commands = {
     st.log({ agent: me, type: 'plan', text, files });
     const lines = [`plan recorded for [${short(me)}]: "${text}"`];
     if (got.length) lines.push(`claimed: ${got.join(' ')}`);
-    for (const h of held) lines.push(`NOT claimed: ${h.f} is held by ${h.owner ? label(h.owner, me) : 'another agent'} — do that file last, or \`mediator wait ${h.f}\``);
+    for (const h of held) lines.push(`NOT claimed: ${h.f} is held by ${h.owner ? label(h.owner, me) : 'another agent'} — do that file last, or \`${st.cmd} wait ${h.f}\``);
     const others = st.liveAgents().filter(a => a.id !== me);
     if (others.length) lines.push(renderStatus(st, me, { compact: true }));
     out(lines.join('\n'));
@@ -394,7 +399,7 @@ const commands = {
         const handed = st.readLog(0).events.some(e => e.type === 'handoff' && e.agent !== me && (e.modified || []).includes(f));
         lines.push(`claimed ${f}${handed ? ' — another agent edited this file earlier; re-read it before editing' : ''}`);
       } else {
-        lines.push(`BLOCKED ${f}: held by ${r.owner ? label(r.owner, me) : 'another agent'}${r.claim && r.claim.modified ? ' (has uncommitted edits)' : ''}. Try \`mediator wait ${f}\` or work on other files first.`);
+        lines.push(`BLOCKED ${f}: held by ${r.owner ? label(r.owner, me) : 'another agent'}${r.claim && r.claim.modified ? ' (has uncommitted edits)' : ''}. Try \`${st.cmd} wait ${f}\` or work on other files first.`);
         process.exitCode = 3;
       }
     }
@@ -509,6 +514,7 @@ function hookOut(event, additionalContext) {
   if (!additionalContext) return;
   out(JSON.stringify({ hookSpecificOutput: { hookEventName: event, additionalContext } }));
 }
+const INLINE_WRITE = /(<<\s*['"]?\w+|\b(python3?|node|perl|ruby|php)\b[^|;&]*\s(-e|-c|-)\s|\bopen\([^)]*['"][wa]|writeFile|write_text|\.write\(|fs\.(promises\.)?writeFile)/;
 const WRITEY = /(\bsed\s+(-[a-zA-Z]*i|--in-place)|\bperl\s+-[a-zA-Z]*i|>{1,2}\s*(?!&|\/dev\/null)|\btee\b|\bmv\b|\bcp\b|\brm\b|\btruncate\b|\bdd\b|\bpatch\b|\bgit\s+(apply|checkout|restore)\b|\bprettier\b.*--write|\beslint\b.*--fix|\bblack\b|\bruff\b.*(format|--fix)|\bgofmt\s+-w|\brustfmt\b)/;
 const GIT_TREEWIDE = [
   [/\bgit\s+stash\b(?!\s+(list|show))/, 'git stash would hide other agents\' uncommitted edits'],
@@ -534,7 +540,7 @@ function runHook(st, event) {
       if (process.env.CLAUDE_ENV_FILE) { try { fs.appendFileSync(process.env.CLAUDE_ENV_FILE, `export MEDIATOR_AGENT=${JSON.stringify(me)}\n`); } catch {} }
       const others = st.liveAgents().filter(a => a.id !== me);
       if (!others.length) return; // zero token cost when working alone
-      out(BRIEF(others.length) + '\n\n' + renderStatus(st, me));
+      out(BRIEF(others.length, st.cmd) + '\n\n' + renderStatus(st, me));
       return;
     }
     case 'prompt': {
@@ -562,7 +568,7 @@ function runHook(st, event) {
       st.log({ agent: me, type: 'blocked', path: rel, holder: c.agent });
       const msg = [
         `mediator: BLOCKED — ${rel} is currently held by agent ${owner ? label(owner, me) : '[' + short(c.agent) + ']'} (claimed ${ago(c.since)}${c.edits ? `, ${c.edits} edit${c.edits === 1 ? '' : 's'} so far` : ''}).`,
-        'Do not edit this file now. Options: (a) do your other files first and come back; (b) run `mediator wait ' + rel + '` to block until it is released, then Read it again before editing; (c) if that agent is clearly gone, `mediator claim --steal ' + rel + '`.',
+        `Do not edit this file now. Options: (a) do your other files first and come back; (b) run \`${st.cmd} wait ${rel}\` to block until it is released, then Read it again before editing; (c) if that agent is clearly gone, \`${st.cmd} claim --steal ${rel}\`.`,
       ].join('\n');
       process.stderr.write(msg + '\n');
       process.exit(2);
@@ -579,13 +585,13 @@ function runHook(st, event) {
           process.exit(2);
         }
       }
-      if (WRITEY.test(cmd)) {
+      if (WRITEY.test(cmd) || INLINE_WRITE.test(cmd)) {
         const present = st.gc();
         const theirs = st.claims().filter(c => c.agent !== me && present[c.agent]);
         const hit = theirs.find(c => cmd.includes(c.path) || cmd.includes(path.basename(c.path)));
         if (hit) {
           const owner = present[hit.agent];
-          process.stderr.write(`mediator: BLOCKED — this command looks like it writes ${hit.path}, which is held by ${label(owner, me)}. Use the Edit tool (so ownership is tracked), do other work first, or \`mediator wait ${hit.path}\`.\n`);
+          process.stderr.write(`mediator: BLOCKED — this command looks like it writes ${hit.path}, which is held by ${label(owner, me)}. Use the Edit tool (so ownership is tracked), do other work first, or \`${st.cmd} wait ${hit.path}\`.\n`);
           process.exit(2);
         }
       }
