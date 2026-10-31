@@ -3,7 +3,7 @@
 /*
  * Benchmark: two headless Claude Code agents (Sonnet) edit overlapping files in one checkout,
  * with and without mediator. Usage:
- *   node bench/run.js --condition baseline|mediator [--trials 3] [--model claude-sonnet-5-5] [--max-turns 60] [--stagger 5]
+ *   node bench/run.js --condition baseline|mediator-strict|mediator-advisory [--trials 3] [--model claude-sonnet-5-5] [--max-turns 60] [--stagger 5]
  *                     [--tasks bench/tasks-hard.json --check bench/check-hard.js --tag hard]
  * Results: bench/runs/<condition>/<trial>/ (per-agent stream logs, check.json, summary.json) and bench/results.jsonl
  */
@@ -37,8 +37,9 @@ function setupWork(trialDir) {
   fs.mkdirSync(work, { recursive: true });
   fs.cpSync(FIXTURE, work, { recursive: true });
   sh('git init -q && git -c user.email=b@b -c user.name=bench add -A && git -c user.email=b@b -c user.name=bench commit -qm fixture', work);
-  if (COND === 'mediator') {
-    sh(`node ${JSON.stringify(BIN)} init --root ${JSON.stringify(work)} --command "node ${BIN}"`, work);
+  if (COND.startsWith('mediator')) {
+    const mode = COND.split('-')[1] || 'advisory'; // mediator-strict | mediator-advisory
+    sh(`node ${JSON.stringify(BIN)} init --root ${JSON.stringify(work)} --command "node ${BIN}" --mode ${mode}`, work);
   }
   return work;
 }
@@ -111,7 +112,7 @@ function parseStream(file) {
     fs.writeFileSync(path.join(trialDir, 'check.json'), JSON.stringify(check, null, 2));
     const agents = {};
     for (const a of tasks.agents) agents[a.name] = { ...parseStream(path.join(trialDir, `${a.name}.jsonl`)), exit: exits.find(e => e.name === a.name) };
-    if (COND === 'mediator') { try { fs.copyFileSync(path.join(work, '.mediator', 'log.jsonl'), path.join(trialDir, 'mediator-log.jsonl')); } catch {} }
+    if (COND.startsWith('mediator')) { try { fs.copyFileSync(path.join(work, '.mediator', 'log.jsonl'), path.join(trialDir, 'mediator-log.jsonl')); } catch {} }
     const usage = Object.values(agents).map(a => a.result && a.result.usage || {});
     const sum = k => usage.reduce((n, u) => n + (u[k] || 0), 0);
     const summary = {

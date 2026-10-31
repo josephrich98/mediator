@@ -17,7 +17,7 @@ const path = require('path');
 const os = require('os');
 const cp = require('child_process');
 
-const VERSION = '0.2.0';
+const VERSION = '0.3.0';
 const TTL_SEC = parseInt(process.env.MEDIATOR_TTL_SEC || '', 10) || 900; // reservation TTL
 const TTL_MS = TTL_SEC * 1000;
 const HOST = os.hostname();
@@ -76,6 +76,10 @@ class State {
   get cfg() { if (!this._cfg) this._cfg = readJSON(path.join(this.dir, 'config.json'), {}); return this._cfg; }
   /** How agents should invoke mediator in this repo (same prefix the hooks use). */
   get cmd() { return this.cfg.cmd || 'mediator'; }
+  /** 'advisory' (default): surgical Edits to a file someone else holds are allowed with a warning; only destructive
+   *  operations are blocked (whole-file Write / shell rewrite of a held file, tree-wide git ops).
+   *  'strict': any edit to a file another agent holds is blocked. */
+  get mode() { return process.env.MEDIATOR_MODE || this.cfg.mode || 'advisory'; }
   get enabled() { return fs.existsSync(this.dir); }
   ensure() {
     fs.mkdirSync(this.agentsDir, { recursive: true });
@@ -276,7 +280,7 @@ function renderStatus(st, me, { compact = false } = {}) {
   for (const c of claims) (byAgent[c.agent] = byAgent[c.agent] || []).push(c);
   const lines = [];
   const n = Object.keys(present).length;
-  lines.push(`mediator: ${n} agent${n === 1 ? '' : 's'} active in ${path.basename(st.root)}${others.length ? '' : ' (just you)'}`);
+  lines.push(`mediator (${st.mode}): ${n} agent${n === 1 ? '' : 's'} active in ${path.basename(st.root)}${others.length ? '' : ' (just you)'}`);
   const order = [...(present[me] ? [present[me]] : []), ...others];
   for (const a of order) {
     const cs = (byAgent[a.id] || []).sort((x, y) => x.path.localeCompare(y.path));
@@ -313,6 +317,11 @@ function renderInbox(st, me, { advance = true } = {}) {
       case 'handoff':
         if (e.modified && e.modified.length) lines.push(`${who} released edited file${e.modified.length === 1 ? '' : 's'}: ${e.modified.join(' ')} — re-read before editing (your earlier read is stale).`);
         break;
+      case 'overlap': {
+        const mine = st.getClaim(e.path);
+        if (e.holder === me && mine && mine.agent === me) lines.push(`${who} also edited ${e.path}, which you hold — re-Read it before your next edit to it.`);
+        break;
+      }
       case 'blocked': break;
       default: break;
     }
@@ -320,9 +329,11 @@ function renderInbox(st, me, { advance = true } = {}) {
   return lines.length ? `mediator — updates from other agents:\n- ${lines.join('\n- ')}` : '';
 }
 
-const BRIEF = (others, cmd) => [
+const BRIEF = (others, cmd, mode) => [
   `mediator is active: ${others} other agent${others === 1 ? ' is' : 's are'} working in this repo right now.`,
-  'Hooks enforce file ownership: a file you Edit/Write is claimed for you automatically; editing a file another agent holds is blocked (you will be told who has it). Edit files with the Edit/Write tools, not shell scripts, so ownership is tracked.',
+  mode === 'strict'
+    ? 'Hooks enforce file ownership: a file you Edit/Write is claimed for you automatically; editing a file another agent holds is blocked (you will be told who has it). Edit files with the Edit/Write tools, not shell scripts, so ownership is tracked.'
+    : 'Hooks track who is editing what. Use the Edit tool for changes (surgical edits to a file someone else is editing are allowed; you will be warned so you keep them small and re-read first). Rewriting a whole file that another agent is editing (Write tool, `cat >`, scripts) is blocked.',
   `Protocol (cheap, do it): 1) Before your first edit run \`${cmd} plan "<one-line goal>" <files you expect to touch>\`.`,
   `2) If you change a shared interface (signature, schema, CLI flag, export), run \`${cmd} note "<what changed>"\`.`,
   `3) If blocked: work on your other files first, or \`${cmd} wait <file>\` (blocks until free), then re-read the file before editing. When you are done with a file others may need, \`${cmd} release <file>\` early.`,
@@ -338,7 +349,7 @@ function parseArgs(argv) {
     if (a.startsWith('--')) {
       const [k, v] = a.slice(2).split('=');
       if (v !== undefined) flags[k] = v;
-      else if (i + 1 < argv.length && !argv[i + 1].startsWith('-') && ['as', 'timeout', 'command', 'settings', 'root', 'n'].includes(k)) flags[k] = argv[++i];
+      else if (i + 1 < argv.length && !argv[i + 1].startsWith('-') && ['as', 'timeout', 'command', 'settings', 'root', 'n', 'mode'].includes(k)) flags[k] = argv[++i];
       else flags[k] = true;
     } else pos.push(a);
   }
@@ -366,7 +377,7 @@ const commands = {
       const settingsPath = flags.settings ? path.resolve(flags.settings) : path.join(root, '.claude', 'settings.json');
       const cmd = flags.command || hookCommand();
       const res = installHooks(settingsPath, cmd);
-      writeJSONAtomic(path.join(st.dir, 'config.json'), { ...readJSON(path.join(st.dir, 'config.json'), {}), cmd });
+      writeJSONAtomic(path.join(st.dir, 'config.json'), { ...readJSON(path.join(st.dir, 'config.json'), {}), cmd, mode: flags.mode === 'strict' ? 'strict' : 'advisory' });
       done.push(`${res} hooks in ${path.relative(process.cwd(), settingsPath)} (command: ${cmd} hook <event>)`);
     }
     if (!flags['no-skill']) {
@@ -374,7 +385,7 @@ const commands = {
       const dst = path.join(root, '.claude', 'skills', 'mediator', 'SKILL.md');
       if (fs.existsSync(src)) { fs.mkdirSync(path.dirname(dst), { recursive: true }); fs.copyFileSync(src, dst); done.push(`installed skill at ${path.relative(process.cwd(), dst)}`); }
     }
-    out('mediator: ' + done.join('; ') + '\nStart two agents in this repo and run `mediator status` to watch them coordinate.');
+    out('mediator: ' + done.join('; ') + `; mode: ${flags.mode === 'strict' ? 'strict' : 'advisory'}` + '\nStart two agents in this repo and run `mediator status` to watch them coordinate.');
   },
   status(st, { flags }) {
     if (!st.enabled) die('not initialized here. Run `mediator init` in the repo root.');
@@ -579,7 +590,7 @@ function runHook(st, event) {
       if (process.env.CLAUDE_ENV_FILE) { try { fs.appendFileSync(process.env.CLAUDE_ENV_FILE, `export MEDIATOR_AGENT=${JSON.stringify(me)}\n`); } catch {} }
       const others = st.liveAgents().filter(a => a.id !== me);
       if (!others.length) return; // zero token cost when working alone
-      out(BRIEF(others.length, st.cmd) + '\n\n' + renderStatus(st, me));
+      out(BRIEF(others.length, st.cmd, st.mode) + '\n\n' + renderStatus(st, me));
       return;
     }
     case 'prompt': {
@@ -604,9 +615,20 @@ function runHook(st, event) {
       if (r.ok) return;
       const owner = r.owner;
       const c = r.claim || {};
+      const wholeFile = input.tool_name === 'Write' && fs.existsSync(path.join(st.root, rel));
+      if (st.mode !== 'strict' && !wholeFile) {
+        // advisory: allow the surgical edit, warn once per file, and tell the holder afterwards.
+        const a = st.getAgent(me) || {};
+        a.overlaps = a.overlaps || {};
+        const first = !a.overlaps[rel];
+        a.overlaps[rel] = NOW(); st.saveAgent(a);
+        st.log({ agent: me, type: 'overlap', path: rel, holder: c.agent });
+        if (first) hookOut('PreToolUse', `mediator: heads-up — ${rel} is also being edited right now by ${owner ? label(owner, me) : '[' + short(c.agent) + ']'}. Keep this edit small and local, don't reformat or rewrite the file, and re-Read it before further edits (its contents may change under you).`);
+        return;
+      }
       st.log({ agent: me, type: 'blocked', path: rel, holder: c.agent });
       const msg = [
-        `mediator: BLOCKED — ${rel} is currently held by agent ${owner ? label(owner, me) : '[' + short(c.agent) + ']'} (claimed ${ago(c.since)}${c.edits ? `, ${c.edits} edit${c.edits === 1 ? '' : 's'} so far` : ''}).`,
+        `mediator: BLOCKED — ${rel} is currently held by agent ${owner ? label(owner, me) : '[' + short(c.agent) + ']'} (claimed ${ago(c.since)}${c.edits ? `, ${c.edits} edit${c.edits === 1 ? '' : 's'} so far` : ''}).${wholeFile ? ' Rewriting the whole file would discard their edits; use the Edit tool for a surgical change instead.' : ''}`,
         `Do not edit this file now. Options: (a) do your other files first and come back; (b) run \`${st.cmd} wait ${rel}\` to block until it is released, then Read it again before editing; (c) if that agent is clearly gone, \`${st.cmd} claim --steal ${rel}\`.`,
       ].join('\n');
       process.stderr.write(msg + '\n');
@@ -677,6 +699,7 @@ Agent protocol:
   mediator gc                         drop dead agents / expired claims
   mediator leave                      deregister yourself
 Hooks:                       mediator hook <session-start|prompt|pre-edit|pre-bash|post-tool|stop|session-end>
+Modes:  mediator init --mode advisory (default) | strict      (or MEDIATOR_MODE=...)
 Env: MEDIATOR_AGENT (identity), MEDIATOR_ROOT (repo root), MEDIATOR_TTL_SEC (reservation TTL, default 900)
 `;
 

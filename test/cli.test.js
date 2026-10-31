@@ -12,7 +12,7 @@ function mk() {
   return dir;
 }
 function run(dir, args, { as, stdin, env = {} } = {}) {
-  const r = cp.spawnSync('node', [BIN, ...args], { cwd: dir, input: stdin, encoding: 'utf8', env: { ...process.env, MEDIATOR_AGENT: as || '', CLAUDE_CODE_SESSION_ID: '', CLAUDE_PID: '', ...env } });
+  const r = cp.spawnSync('node', [BIN, ...args], { cwd: dir, input: stdin, encoding: 'utf8', env: { ...process.env, MEDIATOR_MODE: 'strict', MEDIATOR_AGENT: as || '', CLAUDE_CODE_SESSION_ID: '', CLAUDE_PID: '', ...env } });
   return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() };
 }
 const hookIn = (sid, extra) => JSON.stringify({ session_id: sid, cwd: extra.cwd, hook_event_name: 'x', ...extra });
@@ -120,6 +120,24 @@ test('wait detects a circular wait and tells the later agent to yield within sec
   assert.match(r.out, /DEADLOCK on a.js/); assert.match(r.out, /release b.js/);
   // B's waiting_for was cleared
   assert.equal(JSON.parse(fs.readFileSync(path.join(d, '.mediator', 'agents', 'B.json'), 'utf8')).waiting_for, null);
+});
+
+test('advisory mode: surgical Edit on a held file is allowed with a one-time warning; whole-file Write is blocked; holder is told', () => {
+  const d = mk();
+  const env = { MEDIATOR_MODE: 'advisory' };
+  run(d, ['hook', 'pre-edit'], { stdin: hookIn('A', { cwd: d, tool_name: 'Edit', tool_input: { file_path: 'a.js' } }), env });
+  run(d, ['hook', 'post-tool'], { stdin: hookIn('A', { cwd: d }), env }); // A's inbox cursor
+  let r = run(d, ['hook', 'pre-edit'], { stdin: hookIn('B', { cwd: d, tool_name: 'Edit', tool_input: { file_path: 'a.js' } }), env });
+  assert.equal(r.code, 0);
+  assert.match(JSON.parse(r.out).hookSpecificOutput.additionalContext, /heads-up — a.js is also being edited/);
+  r = run(d, ['hook', 'pre-edit'], { stdin: hookIn('B', { cwd: d, tool_name: 'Edit', tool_input: { file_path: 'a.js' } }), env });
+  assert.equal(r.code, 0); assert.equal(r.out, '', 'warned only once');
+  r = run(d, ['hook', 'pre-edit'], { stdin: hookIn('B', { cwd: d, tool_name: 'Write', tool_input: { file_path: 'a.js', content: 'x' } }), env });
+  assert.equal(r.code, 2); assert.match(r.err, /Rewriting the whole file/);
+  r = run(d, ['hook', 'pre-edit'], { stdin: hookIn('B', { cwd: d, tool_name: 'Write', tool_input: { file_path: 'new.js', content: 'x' } }), env });
+  assert.equal(r.code, 0, 'Write of a new file is fine');
+  r = run(d, ['hook', 'post-tool'], { stdin: hookIn('A', { cwd: d }), env });
+  assert.match(JSON.parse(r.out).hookSpecificOutput.additionalContext, /\[B\] also edited a.js, which you hold/);
 });
 
 test('hook is a silent no-op when mediator is not initialized', () => {
