@@ -2,7 +2,7 @@
 
 **Two AI agents. One repo. Zero clobbered files.**
 
-`mediator` keeps concurrent coding agents (Claude Code sessions, Codex, Cursor, a human) from overwriting each other's work in the same checkout. It is a 600-line, zero-dependency CLI plus a set of Claude Code hooks. No supervising agent, no LLM calls, no tokens spent when you work alone.
+`mediator` keeps concurrent coding agents (Claude Code sessions, Codex, Cursor, a human) from overwriting each other's work in the same checkout. It is a 700-line, zero-dependency CLI plus a set of Claude Code hooks. No supervising agent, no LLM calls, no tokens spent when you work alone. It comes with a three-agent benchmark and an honest write-up of what it does and does not buy you.
 
 ```
 $ claude            # terminal 1: "add priorities to todos"
@@ -53,6 +53,9 @@ Every file an agent edits is **claimed** for that agent until its turn ends. Cla
 | An agent read a file that another agent then changed | Releasing an edited file logs a handoff; others are told once to re-read it. |
 | Shell commands bypass the Edit tool | `sed -i`, `>`, `mv`… aimed at someone else's file are blocked. So are `git stash`, `git checkout .`, `git reset --hard`, `git add -A`, `git commit -a` while others are present. |
 | Idle agents hog files | The Stop hook releases everything at end of turn; the next edit re-claims automatically. |
+| Two waiters hold what the other wants | `mediator wait` walks the wait-for chain on every poll; the agent that joined later is told to yield within seconds. |
+
+Two modes. **Advisory** (default) lets surgical `Edit`s to a file someone else holds go through with a one-time heads-up to both agents, and blocks only the destructive moves: whole-file `Write`, `cat >`/`sed -i`/inline scripts aimed at a held file, and tree-wide git operations. **Strict** (`mediator init --mode strict`) blocks every edit to a held file.
 
 The protocol the agents follow is three cheap habits, taught by the skill and repeated in a ~120-token brief at session start (only when someone else is present):
 
@@ -60,11 +63,29 @@ The protocol the agents follow is three cheap habits, taught by the skill and re
 2. `mediator note "<what changed>"` after changing a shared interface.
 3. On BLOCKED: do other files first, or `mediator wait <file>` and re-read.
 
-## Benchmark
+## Benchmark (read this before you trust the pitch)
 
-Two headless Claude Code agents (Sonnet 5.5) were given overlapping feature tasks on a small todo CLI, five seconds apart, in the same checkout: one adds a `--priority` flag, the other a `--due` flag. Both must touch `src/store.js`, `src/cli.js`, `src/format.js`, `README.md`, and the tests. Both were told another agent was working in the tree. Acceptance is 18 scripted checks (tests pass, each flag works, each is displayed, invalid values rejected, README documents both, nothing deleted). Run it yourself with `node bench/run.js --condition baseline|mediator --trials 3` and `node bench/report.js`.
+Three headless Claude Code agents (Sonnet 5.5) were started five seconds apart in one checkout of a small todo CLI, each with two chained tasks that all touch the same five files: a CommonJS→ESM migration followed by an async `Store` refactor; a `text`→`title` rename followed by a due-date feature; a priority feature followed by `--json` output and an `edit` command. All agents were told others were working in the tree. Acceptance is 32 scripted checks (tests green, every feature works end to end, interface changes landed, README updated, nothing deleted). n = 3 trials per condition.
 
-<!-- BENCH -->
+| Metric (3 agents, long scenario) | no coordination | mediator advisory (default) | mediator strict |
+|---|---|---|---|
+| Acceptance score (of 32) | 32.0 ± 0.0 | 32.0 ± 0.0 | 32.0 ± 0.0 |
+| Trials with all tests passing | 3/3 | 3/3 | 3/3 |
+| Cost, all agents (USD) | 0.54 ± 0.08 | 0.47 ± 0.12 | 0.45 ± 0.05 |
+| Output tokens | 23.4k ± 1.7k | 19.9k ± 4.6k | 21.2k ± 2.4k |
+| Times an agent ran the tests into someone else's half-finished breakage | 7.0 ± 6.2 | 1.0 ± 1.0 | 2.7 ± 2.9 |
+| Wall-clock, all agents done | 81s ± 6 | 114s ± 14 | 125s ± 13 |
+
+What this says, honestly:
+
+- **Sonnet 5.5 did not need saving here.** Uncoordinated agents produced a perfect tree in every trial of every scenario we ran (two-agent and three-agent, with and without an interface-breaking refactor in the mix). They re-read files right before editing, make surgical changes, and Claude Code's `Edit` tool already rejects edits against a stale read. On a small repo with tasks that finish in a minute, the collision window is tiny.
+- **mediator spent fewer tokens and dollars (10–17%, within noise at n = 3) and cut thrash 7×.** The savings come from agents not chasing each other's red tests: a plan at the top and a one-line note when an interface changes are cheaper than discovering the change by running the suite.
+- **It is slower in wall-clock (+40–55%)** because agents wait for a file instead of racing for it, and re-read after handoffs. If you only care about elapsed time and your agents are this capable, run them uncoordinated in worktrees.
+- **Strict locking of every edit is not worth it with a capable model.** It was slower than advisory for no gain in correctness, and v0.1 produced a textbook circular wait (agent A waiting for B's test file while B waited for A's `store.js`) that burned two five-minute timeouts. v0.2 detects wait-for cycles and tells the later agent to yield within two seconds; v0.3 made advisory the default. Strict mode is still there (`mediator init --mode strict`) for agents that rewrite whole files or for models that don't re-read before editing.
+
+Where we expect the gap to widen, and would like benchmark PRs that show it: longer tasks (tens of minutes, so edits land on stale state), weaker or faster models, agents that write whole files or use `sed -i`/heredocs, repos where tests take minutes (so thrash is expensive), and a human editing alongside the bots. The destructive-operation blocks (`git stash`, `git checkout .`, `git reset --hard`, `git add -A`, rewriting a file someone else is mid-edit on) never fired in these runs because the agents never tried them; they are insurance.
+
+Reproduce: `node bench/run.js --condition baseline|mediator-advisory|mediator-strict --trials 3 --tasks bench/tasks-long.json --check bench/check-long.js --tag long`, then `node bench/report.js bench/results-long.jsonl`. Per-trial transcripts, mediator event logs and check results land in `bench/runs/`. The two shorter scenarios (`bench/tasks.json`, `bench/tasks-hard.json`) are described in [bench/README.md](bench/README.md).
 
 ## Commands
 
@@ -102,7 +123,7 @@ More in [docs/design.md](docs/design.md).
 
 **Why not git worktrees?** Use them when tasks are independent. mediator is for when they are not (two features touching the same modules), or when you simply don't want to plan ahead.
 
-**What if an agent needs a file someone else holds for a long time?** `mediator wait <file>` blocks up to 5 minutes by default. `mediator claim --steal <file>` exists for when the holder is clearly gone but its process is still alive.
+**What if an agent needs a file someone else holds for a long time?** `mediator wait <file>` blocks up to 3 minutes by default and returns early with instructions if it detects a circular wait. `mediator claim --steal <file>` exists for when the holder is clearly gone but its process is still alive.
 
 **Does this slow Claude Code down?** One Node process start (~40 ms) per hooked tool call.
 

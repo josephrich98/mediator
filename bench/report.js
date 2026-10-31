@@ -7,8 +7,8 @@ const by = {}; for (const r of rows) (by[r.condition] = by[r.condition] || []).p
 const stat = (xs) => { const m = xs.reduce((a, b) => a + b, 0) / xs.length; const sd = Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / Math.max(1, xs.length - 1)); return { m, sd }; };
 const fmt = (xs, d = 0, unit = '') => { const { m, sd } = stat(xs); return `${m.toFixed(d)}${unit} ± ${sd.toFixed(d)}`; };
 const metrics = [
-  ['Wall-clock (both agents)', r => r.wall_ms / 1000, 0, 's'],
-  ['Cost (USD, both agents)', r => r.cost_usd, 2, ''],
+  ['Wall-clock (all agents)', r => r.wall_ms / 1000, 0, 's'],
+  ['Cost (USD, all agents)', r => r.cost_usd, 2, ''],
   ['Output tokens', r => r.output_tokens, 0, ''],
   ['Input tokens (incl. cache)', r => r.input_tokens / 1000, 0, 'k'],
   ['Assistant turns', r => r.turns, 1, ''],

@@ -22,6 +22,12 @@ No heavy prompting. No supervising LLM. An agent working alone must pay nothing.
 | Shell commands bypass the Edit tool | PreToolUse on Bash blocks `sed -i`/`>`/`mv`… aimed at a file someone else holds, and blocks tree-wide git operations (`stash`, `checkout .`, `reset --hard`, `add -A`, `commit -a`) while others are present. Reads are never blocked. |
 | Idle agents hog files | The Stop hook releases everything at the end of a turn. Claims come back automatically on the next edit. |
 
+## Advisory vs strict (what the benchmark taught us)
+
+v0.1 blocked every edit to a file another agent held. Three Sonnet 5.5 agents on overlapping tasks then took 2–3× longer than uncoordinated agents for identical results, and once deadlocked (A waiting for B's test file, B waiting for A's `store.js`; both timed out and re-waited). Uncoordinated agents were fine because they re-read before every surgical edit and Claude Code's `Edit` tool refuses edits against a stale read.
+
+So the default became **advisory**: a surgical `Edit` to a held file is allowed, both agents get a one-line heads-up (once per file), and the holder is told to re-read. What stays blocked is what actually destroys work: whole-file `Write`, shell rewrites (`cat >`, `sed -i`, inline python/node), and tree-wide git operations. `wait` detects wait-for cycles and makes the later agent yield. Strict mode remains for whole-file writers.
+
 ## What it costs
 
 - Alone in a repo: the SessionStart hook prints nothing. Zero tokens.
