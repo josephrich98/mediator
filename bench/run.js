@@ -2,8 +2,8 @@
 'use strict';
 /*
  * Benchmark: two headless Claude Code agents (Sonnet) edit overlapping files in one checkout,
- * with and without mediator. Usage:
- *   node bench/run.js --condition baseline|mediator-strict|mediator-advisory [--trials 3] [--model claude-sonnet-5-5] [--max-turns 60] [--stagger 5]
+ * with and without mom. Usage:
+ *   node bench/run.js --condition baseline|mom-strict|mom-advisory [--trials 3] [--model claude-sonnet-5-5] [--max-turns 60] [--stagger 5]
  *                     [--tasks bench/tasks-hard.json --check bench/check-hard.js --tag hard]
  * Results: bench/runs/<condition>/<trial>/ (per-agent stream logs, check.json, summary.json) and bench/results.jsonl
  */
@@ -16,7 +16,7 @@ const MAX_TURNS = +(args['max-turns'] || 60);
 const STAGGER = +(args.stagger || 5) * 1000;
 const BUDGET = +(args.budget || 4); // USD per agent
 const ROOT = path.resolve(__dirname, '..');
-const BIN = path.join(ROOT, 'bin', 'mediator.js');
+const BIN = path.join(ROOT, 'bin', 'mom.js');
 const FIXTURE = path.join(__dirname, 'fixture');
 const TAG = args.tag || 'default';
 const RUNS = path.join(__dirname, 'runs', TAG, COND);
@@ -24,11 +24,11 @@ const TASKS_FILE = path.resolve(args.tasks || path.join(__dirname, 'tasks.json')
 const CHECK = path.resolve(args.check || path.join(__dirname, 'check.js'));
 const RESULTS = path.join(__dirname, TAG === 'default' ? 'results.jsonl' : `results-${TAG}.jsonl`);
 const tasks = JSON.parse(fs.readFileSync(TASKS_FILE, 'utf8'));
-const CONFIG_DIR = path.join(os.tmpdir(), 'mediator-bench-claude-config');
+const CONFIG_DIR = path.join(os.tmpdir(), 'mom-bench-claude-config');
 fs.mkdirSync(CONFIG_DIR, { recursive: true });
 
 const env = { ...process.env, CLAUDE_CONFIG_DIR: CONFIG_DIR };
-for (const k of ['CLAUDECODE', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_PID', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_MESSAGING_TOKEN', 'CLAUDE_CODE_MESSAGING_SOCKET', 'MEDIATOR_AGENT', 'MEDIATOR_ROOT']) delete env[k];
+for (const k of ['CLAUDECODE', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_PID', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_MESSAGING_TOKEN', 'CLAUDE_CODE_MESSAGING_SOCKET', 'MOM_AGENT', 'MOM_ROOT']) delete env[k];
 
 function sh(cmd, cwd) { return cp.execSync(cmd, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
 
@@ -37,8 +37,8 @@ function setupWork(trialDir) {
   fs.mkdirSync(work, { recursive: true });
   fs.cpSync(FIXTURE, work, { recursive: true });
   sh('git init -q && git -c user.email=b@b -c user.name=bench add -A && git -c user.email=b@b -c user.name=bench commit -qm fixture', work);
-  if (COND.startsWith('mediator')) {
-    const mode = COND.split('-')[1] || 'advisory'; // mediator-strict | mediator-advisory
+  if (COND.startsWith('mom')) {
+    const mode = COND.split('-')[1] || 'advisory'; // mom-strict | mom-advisory
     sh(`node ${JSON.stringify(BIN)} init --root ${JSON.stringify(work)} --command "node ${BIN}" --mode ${mode}`, work);
   }
   return work;
@@ -58,7 +58,7 @@ function runAgent(work, agent, outFile) {
 
 function parseStream(file) {
   const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean);
-  const s = { turns: 0, tool_uses: {}, tool_errors: 0, error_kinds: {}, mediator_blocks: 0, mediator_cmds: 0, test_failures_seen: 0, result: null, text_chars: 0 };
+  const s = { turns: 0, tool_uses: {}, tool_errors: 0, error_kinds: {}, mom_blocks: 0, mom_cmds: 0, test_failures_seen: 0, result: null, text_chars: 0 };
   const pending = {}; // tool_use_id -> name
   for (const l of lines) {
     let m; try { m = JSON.parse(l); } catch { continue; }
@@ -67,7 +67,7 @@ function parseStream(file) {
       for (const c of m.message.content) {
         if (c.type === 'tool_use') {
           s.tool_uses[c.name] = (s.tool_uses[c.name] || 0) + 1; pending[c.id] = c.name;
-          if (c.name === 'Bash' && /\bmediator\b/.test(c.input && c.input.command || '')) s.mediator_cmds++;
+          if (c.name === 'Bash' && /\bmom\b/.test(c.input && c.input.command || '')) s.mom_cmds++;
         } else if (c.type === 'text') s.text_chars += (c.text || '').length;
       }
     } else if (m.type === 'user' && m.message && Array.isArray(m.message.content)) {
@@ -77,14 +77,14 @@ function parseStream(file) {
         if (/ℹ fail [1-9]/.test(txt) || /# fail [1-9]/.test(txt)) s.test_failures_seen++;
         if (c.is_error) {
           s.tool_errors++;
-          const kind = /mediator: BLOCKED/.test(txt) ? 'mediator_blocked'
+          const kind = /mom: BLOCKED/.test(txt) ? 'mom_blocked'
             : /modified since read|has been modified/i.test(txt) ? 'stale_read'
             : /has not been read yet|must read|Read it first/i.test(txt) ? 'read_first'
             : /String to replace not found|old_string/i.test(txt) ? 'edit_mismatch'
             : /exit code|Error:|failed|✖/i.test(txt) ? 'command_failed' : 'other';
           s.error_kinds[kind] = (s.error_kinds[kind] || 0) + 1;
-          if (kind === 'mediator_blocked') s.mediator_blocks++;
-        } else if (/mediator: BLOCKED/.test(txt)) { s.mediator_blocks++; }
+          if (kind === 'mom_blocked') s.mom_blocks++;
+        } else if (/mom: BLOCKED/.test(txt)) { s.mom_blocks++; }
       }
     } else if (m.type === 'result') {
       s.result = { cost_usd: m.total_cost_usd, duration_ms: m.duration_ms, duration_api_ms: m.duration_api_ms, num_turns: m.num_turns, usage: m.usage, subtype: m.subtype, is_error: m.is_error };
@@ -112,7 +112,7 @@ function parseStream(file) {
     fs.writeFileSync(path.join(trialDir, 'check.json'), JSON.stringify(check, null, 2));
     const agents = {};
     for (const a of tasks.agents) agents[a.name] = { ...parseStream(path.join(trialDir, `${a.name}.jsonl`)), exit: exits.find(e => e.name === a.name) };
-    if (COND.startsWith('mediator')) { try { fs.copyFileSync(path.join(work, '.mediator', 'log.jsonl'), path.join(trialDir, 'mediator-log.jsonl')); } catch {} }
+    if (COND.startsWith('mom')) { try { fs.copyFileSync(path.join(work, '.mom', 'log.jsonl'), path.join(trialDir, 'mom-log.jsonl')); } catch {} }
     const usage = Object.values(agents).map(a => a.result && a.result.usage || {});
     const sum = k => usage.reduce((n, u) => n + (u[k] || 0), 0);
     const summary = {
@@ -123,8 +123,8 @@ function parseStream(file) {
       turns: Object.values(agents).reduce((n, a) => n + ((a.result && a.result.num_turns) || 0), 0),
       tool_errors: Object.values(agents).reduce((n, a) => n + a.tool_errors, 0),
       error_kinds: Object.values(agents).reduce((acc, a) => { for (const [k, v] of Object.entries(a.error_kinds)) acc[k] = (acc[k] || 0) + v; return acc; }, {}),
-      mediator_blocks: Object.values(agents).reduce((n, a) => n + a.mediator_blocks, 0),
-      mediator_cmds: Object.values(agents).reduce((n, a) => n + a.mediator_cmds, 0),
+      mom_blocks: Object.values(agents).reduce((n, a) => n + a.mom_blocks, 0),
+      mom_cmds: Object.values(agents).reduce((n, a) => n + a.mom_cmds, 0),
       test_failures_seen: Object.values(agents).reduce((n, a) => n + a.test_failures_seen, 0),
       max_turns_hit: Object.values(agents).filter(a => a.result && a.result.subtype && a.result.subtype !== 'success').length,
       score: check.score, max: check.max, tests: check.note && check.note.tests, failed_checks: Object.entries(check.checks || {}).filter(([, v]) => !v).map(([k]) => k),
@@ -132,6 +132,6 @@ function parseStream(file) {
     };
     fs.writeFileSync(path.join(trialDir, 'summary.json'), JSON.stringify(summary, null, 2));
     fs.appendFileSync(RESULTS, JSON.stringify({ ...summary, agents: undefined }) + '\n');
-    console.log(`  wall ${(wall_ms / 1000).toFixed(0)}s  cost $${summary.cost_usd}  out_tokens ${summary.output_tokens}  turns ${summary.turns}  tool_errors ${summary.tool_errors} ${JSON.stringify(summary.error_kinds)}  red_tests_seen ${summary.test_failures_seen}  blocks ${summary.mediator_blocks}  score ${summary.score}/${summary.max}  tests ${JSON.stringify(summary.tests)}`);
+    console.log(`  wall ${(wall_ms / 1000).toFixed(0)}s  cost $${summary.cost_usd}  out_tokens ${summary.output_tokens}  turns ${summary.turns}  tool_errors ${summary.tool_errors} ${JSON.stringify(summary.error_kinds)}  red_tests_seen ${summary.test_failures_seen}  blocks ${summary.mom_blocks}  score ${summary.score}/${summary.max}  tests ${JSON.stringify(summary.tests)}`);
   }
 })();

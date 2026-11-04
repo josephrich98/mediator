@@ -3,16 +3,16 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs'), path = require('path'), os = require('os'), cp = require('child_process');
 
-const BIN = path.join(__dirname, '..', 'bin', 'mediator.js');
+const BIN = path.join(__dirname, '..', 'bin', 'mom.js');
 function mk() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mediator-test-'));
-  fs.mkdirSync(path.join(dir, '.mediator', 'agents'), { recursive: true });
-  fs.mkdirSync(path.join(dir, '.mediator', 'claims'), { recursive: true });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mom-test-'));
+  fs.mkdirSync(path.join(dir, '.mom', 'agents'), { recursive: true });
+  fs.mkdirSync(path.join(dir, '.mom', 'claims'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'a.js'), '1'); fs.writeFileSync(path.join(dir, 'b.js'), '2');
   return dir;
 }
 function run(dir, args, { as, stdin, env = {} } = {}) {
-  const r = cp.spawnSync('node', [BIN, ...args], { cwd: dir, input: stdin, encoding: 'utf8', env: { ...process.env, MEDIATOR_MODE: 'strict', MEDIATOR_AGENT: as || '', CLAUDE_CODE_SESSION_ID: '', CLAUDE_PID: '', ...env } });
+  const r = cp.spawnSync('node', [BIN, ...args], { cwd: dir, input: stdin, encoding: 'utf8', env: { ...process.env, MOM_MODE: 'strict', MOM_AGENT: as || '', CLAUDE_CODE_SESSION_ID: '', CLAUDE_PID: '', ...env } });
   return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() };
 }
 const hookIn = (sid, extra) => JSON.stringify({ session_id: sid, cwd: extra.cwd, hook_event_name: 'x', ...extra });
@@ -93,13 +93,13 @@ test('stop releases claims and post-tool delivers inbox once', () => {
 test('dead agent claims are reclaimable; concurrent claimers: exactly one wins', () => {
   const d = mk();
   // dead agent: fake pid that is not alive, old heartbeat
-  fs.writeFileSync(path.join(d, '.mediator', 'agents', 'DEAD.json'), JSON.stringify({ id: 'DEAD', host: os.hostname(), pid: 999999, heartbeat: 0, started: 0 }));
-  fs.writeFileSync(path.join(d, '.mediator', 'claims', 'a%2Ejs.json'), JSON.stringify({ path: 'a.js', agent: 'DEAD', since: 0, expires: Date.now() + 1e9, modified: true }));
+  fs.writeFileSync(path.join(d, '.mom', 'agents', 'DEAD.json'), JSON.stringify({ id: 'DEAD', host: os.hostname(), pid: 999999, heartbeat: 0, started: 0 }));
+  fs.writeFileSync(path.join(d, '.mom', 'claims', 'a%2Ejs.json'), JSON.stringify({ path: 'a.js', agent: 'DEAD', since: 0, expires: Date.now() + 1e9, modified: true }));
   const r = run(d, ['claim', 'a.js'], { as: 'A' });
   assert.equal(r.code, 0);
   // race: 8 agents claim b.js simultaneously
   const procs = [];
-  for (let i = 0; i < 8; i++) procs.push(cp.spawn('node', [BIN, 'claim', 'b.js'], { cwd: d, env: { ...process.env, MEDIATOR_AGENT: 'R' + i, CLAUDE_CODE_SESSION_ID: '', CLAUDE_PID: '' } }));
+  for (let i = 0; i < 8; i++) procs.push(cp.spawn('node', [BIN, 'claim', 'b.js'], { cwd: d, env: { ...process.env, MOM_AGENT: 'R' + i, CLAUDE_CODE_SESSION_ID: '', CLAUDE_PID: '' } }));
   return Promise.all(procs.map(p => new Promise(res => p.on('exit', res)))).then(codes => {
     assert.equal(codes.filter(c => c === 0).length, 1, 'exactly one winner');
     assert.equal(codes.filter(c => c === 3).length, 7);
@@ -110,8 +110,8 @@ test('wait detects a circular wait and tells the later agent to yield within sec
   const d = mk();
   run(d, ['plan', 'first', 'a.js'], { as: 'A' });
   // A is waiting for b.js, which B holds; B then waits for a.js -> cycle. B joined later -> B yields.
-  const aRec = JSON.parse(fs.readFileSync(path.join(d, '.mediator', 'agents', 'A.json'), 'utf8'));
-  aRec.started -= 5000; aRec.waiting_for = 'b.js'; fs.writeFileSync(path.join(d, '.mediator', 'agents', 'A.json'), JSON.stringify(aRec));
+  const aRec = JSON.parse(fs.readFileSync(path.join(d, '.mom', 'agents', 'A.json'), 'utf8'));
+  aRec.started -= 5000; aRec.waiting_for = 'b.js'; fs.writeFileSync(path.join(d, '.mom', 'agents', 'A.json'), JSON.stringify(aRec));
   run(d, ['plan', 'second', 'b.js'], { as: 'B' });
   const t0 = Date.now();
   const r = run(d, ['wait', 'a.js', '--timeout', '60'], { as: 'B' });
@@ -119,12 +119,12 @@ test('wait detects a circular wait and tells the later agent to yield within sec
   assert.equal(r.code, 4);
   assert.match(r.out, /DEADLOCK on a.js/); assert.match(r.out, /release b.js/);
   // B's waiting_for was cleared
-  assert.equal(JSON.parse(fs.readFileSync(path.join(d, '.mediator', 'agents', 'B.json'), 'utf8')).waiting_for, null);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(d, '.mom', 'agents', 'B.json'), 'utf8')).waiting_for, null);
 });
 
 test('advisory mode: surgical Edit on a held file is allowed with a one-time warning; whole-file Write is blocked; holder is told', () => {
   const d = mk();
-  const env = { MEDIATOR_MODE: 'advisory' };
+  const env = { MOM_MODE: 'advisory' };
   run(d, ['hook', 'pre-edit'], { stdin: hookIn('A', { cwd: d, tool_name: 'Edit', tool_input: { file_path: 'a.js' } }), env });
   run(d, ['hook', 'post-tool'], { stdin: hookIn('A', { cwd: d }), env }); // A's inbox cursor
   let r = run(d, ['hook', 'pre-edit'], { stdin: hookIn('B', { cwd: d, tool_name: 'Edit', tool_input: { file_path: 'a.js' } }), env });
@@ -140,14 +140,14 @@ test('advisory mode: surgical Edit on a held file is allowed with a one-time war
   assert.match(JSON.parse(r.out).hookSpecificOutput.additionalContext, /\[B\] also edited a.js, which you hold/);
 });
 
-test('hook is a silent no-op when mediator is not initialized', () => {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'mediator-none-'));
+test('hook is a silent no-op when mom is not initialized', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'mom-none-'));
   const r = run(d, ['hook', 'pre-edit'], { stdin: hookIn('A', { cwd: d, tool_input: { file_path: 'x.js' } }) });
   assert.equal(r.code, 0); assert.equal(r.out, '');
 });
 
 test('init installs hooks idempotently and gitignores state', () => {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'mediator-init-'));
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'mom-init-'));
   cp.execSync('git init -q', { cwd: d });
   let r = run(d, ['init', '--no-skill']);
   assert.equal(r.code, 0);
@@ -156,5 +156,5 @@ test('init installs hooks idempotently and gitignores state', () => {
   r = run(d, ['init', '--no-skill']);
   const s2 = JSON.parse(fs.readFileSync(path.join(d, '.claude', 'settings.json'), 'utf8'));
   assert.equal(s2.hooks.PreToolUse.length, 2, 'idempotent');
-  assert.match(fs.readFileSync(path.join(d, '.gitignore'), 'utf8'), /\.mediator\//);
+  assert.match(fs.readFileSync(path.join(d, '.gitignore'), 'utf8'), /\.mom\//);
 });

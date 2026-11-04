@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 'use strict';
 /*
- * mediator — keep concurrent AI coding agents from stepping on each other.
+ * mom — keep concurrent AI coding agents from stepping on each other.
  *
- * Zero dependencies. State lives in <repo>/.mediator/ as plain files:
+ * Zero dependencies. State lives in <repo>/.mom/ as plain files:
  *   agents/<id>.json   one record per live agent (plan, pid, heartbeat, inbox cursor)
  *   claims/<path>.json one record per claimed file; created with O_EXCL so
  *                      "check and claim" is a single atomic filesystem operation
  *   log.jsonl          append-only event log (plans, notes, handoffs)
  *
- * Agents never need to read these files; they use `mediator <cmd>` and the
- * Claude Code hooks (`mediator hook <event>`) do the rest automatically.
+ * Agents never need to read these files; they use `mom <cmd>` and the
+ * Claude Code hooks (`mom hook <event>`) do the rest automatically.
  */
 const fs = require('fs');
 const path = require('path');
@@ -18,7 +18,7 @@ const os = require('os');
 const cp = require('child_process');
 
 const VERSION = '0.3.0';
-const TTL_SEC = parseInt(process.env.MEDIATOR_TTL_SEC || '', 10) || 900; // reservation TTL
+const TTL_SEC = parseInt(process.env.MOM_TTL_SEC || '', 10) || 900; // reservation TTL
 const TTL_MS = TTL_SEC * 1000;
 const HOST = os.hostname();
 const NOW = () => Date.now();
@@ -46,15 +46,15 @@ function pidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM' ? true : false; }
 }
 function out(s) { if (s) process.stdout.write(s.endsWith('\n') ? s : s + '\n'); }
-function die(msg, code = 1) { process.stderr.write(`mediator: ${msg}\n`); process.exit(code); }
+function die(msg, code = 1) { process.stderr.write(`mom: ${msg}\n`); process.exit(code); }
 
 // ---------------------------------------------------------------- root / state dir
 function findRoot(start) {
-  if (process.env.MEDIATOR_ROOT) return path.resolve(process.env.MEDIATOR_ROOT);
+  if (process.env.MOM_ROOT) return path.resolve(process.env.MOM_ROOT);
   let dir = path.resolve(start || process.cwd());
-  // 1) nearest ancestor with .mediator/
+  // 1) nearest ancestor with .mom/
   for (let d = dir; ; d = path.dirname(d)) {
-    if (fs.existsSync(path.join(d, '.mediator'))) return d;
+    if (fs.existsSync(path.join(d, '.mom'))) return d;
     if (path.dirname(d) === d) break;
   }
   // 2) nearest ancestor with .git
@@ -67,19 +67,19 @@ function findRoot(start) {
 class State {
   constructor(root) {
     this.root = root;
-    this.dir = path.join(root, '.mediator');
+    this.dir = path.join(root, '.mom');
     this.agentsDir = path.join(this.dir, 'agents');
     this.claimsDir = path.join(this.dir, 'claims');
     this.logFile = path.join(this.dir, 'log.jsonl');
     this._cfg = null;
   }
   get cfg() { if (!this._cfg) this._cfg = readJSON(path.join(this.dir, 'config.json'), {}); return this._cfg; }
-  /** How agents should invoke mediator in this repo (same prefix the hooks use). */
-  get cmd() { return this.cfg.cmd || 'mediator'; }
+  /** How agents should invoke mom in this repo (same prefix the hooks use). */
+  get cmd() { return this.cfg.cmd || 'mom'; }
   /** 'advisory' (default): surgical Edits to a file someone else holds are allowed with a warning; only destructive
    *  operations are blocked (whole-file Write / shell rewrite of a held file, tree-wide git ops).
    *  'strict': any edit to a file another agent holds is blocked. */
-  get mode() { return process.env.MEDIATOR_MODE || this.cfg.mode || 'advisory'; }
+  get mode() { return process.env.MOM_MODE || this.cfg.mode || 'advisory'; }
   get enabled() { return fs.existsSync(this.dir); }
   ensure() {
     fs.mkdirSync(this.agentsDir, { recursive: true });
@@ -213,7 +213,7 @@ function hostPidFromAncestors() {
         ppid = parseInt(line, 10); cmd = line.replace(/^\s*\d+\s*/, '');
       }
     } catch { break; }
-    if (/\b(claude|codex|cursor|aider|gemini|copilot|opencode)\b/i.test(cmd) && !/mediator/.test(cmd)) { found = pid; break; }
+    if (/\b(claude|codex|cursor|aider|gemini|copilot|opencode)\b/i.test(cmd) && !/mom/.test(cmd)) { found = pid; break; }
     pid = ppid;
   }
   return found || first;
@@ -223,7 +223,7 @@ function resolveSelf(st, hookInput, flags) {
   if (hookInput && hookInput.session_id) {
     return hookInput.agent_id ? `${hookInput.session_id}.${hookInput.agent_id}` : hookInput.session_id;
   }
-  if (process.env.MEDIATOR_AGENT) return process.env.MEDIATOR_AGENT;
+  if (process.env.MOM_AGENT) return process.env.MOM_AGENT;
   if (process.env.CLAUDE_CODE_SESSION_ID) return process.env.CLAUDE_CODE_SESSION_ID;
   // match an ancestor pid against registered agents
   const hostPid = hostPidFromAncestors();
@@ -280,7 +280,7 @@ function renderStatus(st, me, { compact = false } = {}) {
   for (const c of claims) (byAgent[c.agent] = byAgent[c.agent] || []).push(c);
   const lines = [];
   const n = Object.keys(present).length;
-  lines.push(`mediator (${st.mode}): ${n} agent${n === 1 ? '' : 's'} active in ${path.basename(st.root)}${others.length ? '' : ' (just you)'}`);
+  lines.push(`mom (${st.mode}): ${n} agent${n === 1 ? '' : 's'} active in ${path.basename(st.root)}${others.length ? '' : ' (just you)'}`);
   const order = [...(present[me] ? [present[me]] : []), ...others];
   for (const a of order) {
     const cs = (byAgent[a.id] || []).sort((x, y) => x.path.localeCompare(y.path));
@@ -326,11 +326,11 @@ function renderInbox(st, me, { advance = true } = {}) {
       default: break;
     }
   }
-  return lines.length ? `mediator — updates from other agents:\n- ${lines.join('\n- ')}` : '';
+  return lines.length ? `mom — updates from other agents:\n- ${lines.join('\n- ')}` : '';
 }
 
 const BRIEF = (others, cmd, mode) => [
-  `mediator is active: ${others} other agent${others === 1 ? ' is' : 's are'} working in this repo right now.`,
+  `mom is active: ${others} other agent${others === 1 ? ' is' : 's are'} working in this repo right now.`,
   mode === 'strict'
     ? 'Hooks enforce file ownership: a file you Edit/Write is claimed for you automatically; editing a file another agent holds is blocked (you will be told who has it). Edit files with the Edit/Write tools, not shell scripts, so ownership is tracked.'
     : 'Hooks track who is editing what. Use the Edit tool for changes (surgical edits to a file someone else is editing are allowed; you will be warned so you keep them small and re-read first). Rewriting a whole file that another agent is editing (Write tool, `cat >`, scripts) is blocked.',
@@ -358,7 +358,7 @@ function parseArgs(argv) {
 
 function needSelf(st, flags) {
   const me = resolveSelf(st, null, flags);
-  if (!me) die('cannot tell which agent you are. Set MEDIATOR_AGENT=<id> or pass --as <id>.');
+  if (!me) die('cannot tell which agent you are. Set MOM_AGENT=<id> or pass --as <id>.');
   ensureAgent(st, me);
   return me;
 }
@@ -368,11 +368,11 @@ const commands = {
     const root = flags.root ? path.resolve(flags.root) : gitRootOrCwd();
     st = new State(root);
     st.ensure();
-    const done = [`created ${path.relative(process.cwd(), st.dir) || '.mediator'}/`];
+    const done = [`created ${path.relative(process.cwd(), st.dir) || '.mom'}/`];
     // .gitignore
     const gi = path.join(root, '.gitignore');
     const cur = fs.existsSync(gi) ? fs.readFileSync(gi, 'utf8') : '';
-    if (!/^\.mediator\/?$/m.test(cur)) { fs.writeFileSync(gi, cur + (cur && !cur.endsWith('\n') ? '\n' : '') + '.mediator/\n'); done.push('added .mediator/ to .gitignore'); }
+    if (!/^\.mom\/?$/m.test(cur)) { fs.writeFileSync(gi, cur + (cur && !cur.endsWith('\n') ? '\n' : '') + '.mom/\n'); done.push('added .mom/ to .gitignore'); }
     if (!flags['no-hooks']) {
       const settingsPath = flags.settings ? path.resolve(flags.settings) : path.join(root, '.claude', 'settings.json');
       const cmd = flags.command || hookCommand();
@@ -381,14 +381,14 @@ const commands = {
       done.push(`${res} hooks in ${path.relative(process.cwd(), settingsPath)} (command: ${cmd} hook <event>)`);
     }
     if (!flags['no-skill']) {
-      const src = path.join(__dirname, '..', 'skills', 'mediator', 'SKILL.md');
-      const dst = path.join(root, '.claude', 'skills', 'mediator', 'SKILL.md');
+      const src = path.join(__dirname, '..', 'skills', 'mom', 'SKILL.md');
+      const dst = path.join(root, '.claude', 'skills', 'mom', 'SKILL.md');
       if (fs.existsSync(src)) { fs.mkdirSync(path.dirname(dst), { recursive: true }); fs.copyFileSync(src, dst); done.push(`installed skill at ${path.relative(process.cwd(), dst)}`); }
     }
-    out('mediator: ' + done.join('; ') + `; mode: ${flags.mode === 'strict' ? 'strict' : 'advisory'}` + '\nStart two agents in this repo and run `mediator status` to watch them coordinate.');
+    out('mom: ' + done.join('; ') + `; mode: ${flags.mode === 'strict' ? 'strict' : 'advisory'}` + '\nStart two agents in this repo and run `mom status` to watch them coordinate.');
   },
   status(st, { flags }) {
-    if (!st.enabled) die('not initialized here. Run `mediator init` in the repo root.');
+    if (!st.enabled) die('not initialized here. Run `mom init` in the repo root.');
     const me = resolveSelf(st, null, flags);
     if (flags.json) {
       const present = st.gc();
@@ -397,10 +397,10 @@ const commands = {
     out(renderStatus(st, me));
   },
   plan(st, { flags, pos }) {
-    if (!st.enabled) die('not initialized here. Run `mediator init` in the repo root.');
+    if (!st.enabled) die('not initialized here. Run `mom init` in the repo root.');
     const me = needSelf(st, flags);
     const text = pos[0];
-    if (!text) die('usage: mediator plan "<one-line goal>" [files...]');
+    if (!text) die('usage: mom plan "<one-line goal>" [files...]');
     const files = pos.slice(1).map(f => st.rel(f)).filter(Boolean);
     ensureAgent(st, me, { plan: text });
     const got = [], held = [];
@@ -417,16 +417,16 @@ const commands = {
     out(lines.join('\n'));
   },
   claim(st, { flags, pos }) {
-    if (!st.enabled) die('not initialized here. Run `mediator init` in the repo root.');
+    if (!st.enabled) die('not initialized here. Run `mom init` in the repo root.');
     const me = needSelf(st, flags);
     const files = pos.map(f => st.rel(f)).filter(Boolean);
-    if (!files.length) die('usage: mediator claim <files...> [--wait] [--timeout SEC] [--steal]');
+    if (!files.length) die('usage: mom claim <files...> [--wait] [--timeout SEC] [--steal]');
     const deadline = NOW() + (parseInt(flags.timeout, 10) || 180) * 1000;
     const lines = [];
     for (const f of files) {
       let r = st.tryClaim(f, me, { steal: !!flags.steal });
       if (!r.ok && flags.wait) {
-        process.stderr.write(`mediator: waiting for ${f} (held by ${r.owner ? label(r.owner, me) : '?'})…\n`);
+        process.stderr.write(`mom: waiting for ${f} (held by ${r.owner ? label(r.owner, me) : '?'})…\n`);
         const meRec = ensureAgent(st, me, { waiting_for: f });
         let deadlocked = null;
         while (!r.ok && NOW() < deadline) {
@@ -460,7 +460,7 @@ const commands = {
     if (!st.enabled) die('not initialized here.');
     const me = needSelf(st, flags);
     const files = flags.all ? st.claims().filter(c => c.agent === me).map(c => c.path) : pos.map(f => st.rel(f)).filter(Boolean);
-    if (!files.length) die('usage: mediator release <files...> | --all');
+    if (!files.length) die('usage: mom release <files...> | --all');
     const released = [], modified = [];
     for (const f of files) { const c = st.release(f, me); if (c) { released.push(f); if (c.modified) modified.push(f); } }
     if (released.length) st.log({ agent: me, type: 'handoff', released, modified });
@@ -469,7 +469,7 @@ const commands = {
   note(st, { flags, pos }) {
     if (!st.enabled) die('not initialized here.');
     const me = needSelf(st, flags);
-    if (!pos[0]) die('usage: mediator note "<what changed and what others must do>"');
+    if (!pos[0]) die('usage: mom note "<what changed and what others must do>"');
     st.log({ agent: me, type: 'note', text: pos[0] });
     const others = st.liveAgents().filter(a => a.id !== me).length;
     out(`note posted to ${others} other agent${others === 1 ? '' : 's'}.`);
@@ -521,10 +521,10 @@ function gitRootOrCwd() {
   try { return cp.execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return process.cwd(); }
 }
 function hookCommand() {
-  // Prefer a PATH-resolvable `mediator`; otherwise call this file by absolute path.
+  // Prefer a PATH-resolvable `mom`; otherwise call this file by absolute path.
   try {
-    const w = cp.execFileSync(process.platform === 'win32' ? 'where' : 'which', ['mediator'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    if (w) return 'mediator';
+    const w = cp.execFileSync(process.platform === 'win32' ? 'where' : 'which', ['mom'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    if (w) return 'mom';
   } catch {}
   return `node ${JSON.stringify(fs.realpathSync(__filename))}`.replace(/^node "([^ "]+)"$/, 'node $1');
 }
@@ -580,14 +580,14 @@ const GIT_TREEWIDE = [
 function runHook(st, event) {
   const input = readStdinJSON();
   if (input.cwd) st = new State(findRoot(input.cwd));
-  if (!st.enabled) return; // mediator not enabled in this repo: silent no-op (safe to install globally)
+  if (!st.enabled) return; // mom not enabled in this repo: silent no-op (safe to install globally)
   const me = resolveSelf(st, input, {});
   if (!me) return;
   switch (event) {
     case 'session-start': {
       st.ensure();
       ensureAgent(st, me, { pid: hostPidFromAncestors(), cwd: input.cwd || st.root });
-      if (process.env.CLAUDE_ENV_FILE) { try { fs.appendFileSync(process.env.CLAUDE_ENV_FILE, `export MEDIATOR_AGENT=${JSON.stringify(me)}\n`); } catch {} }
+      if (process.env.CLAUDE_ENV_FILE) { try { fs.appendFileSync(process.env.CLAUDE_ENV_FILE, `export MOM_AGENT=${JSON.stringify(me)}\n`); } catch {} }
       const others = st.liveAgents().filter(a => a.id !== me);
       if (!others.length) return; // zero token cost when working alone
       out(BRIEF(others.length, st.cmd, st.mode) + '\n\n' + renderStatus(st, me));
@@ -610,7 +610,7 @@ function runHook(st, event) {
       const p = ti.file_path || ti.notebook_path || ti.path;
       if (!p) return;
       const rel = st.rel(p);
-      if (!rel || rel.startsWith('.mediator/')) return;
+      if (!rel || rel.startsWith('.mom/')) return;
       const r = st.tryClaim(rel, me, { modified: true });
       if (r.ok) return;
       const owner = r.owner;
@@ -623,12 +623,12 @@ function runHook(st, event) {
         const first = !a.overlaps[rel];
         a.overlaps[rel] = NOW(); st.saveAgent(a);
         st.log({ agent: me, type: 'overlap', path: rel, holder: c.agent });
-        if (first) hookOut('PreToolUse', `mediator: heads-up — ${rel} is also being edited right now by ${owner ? label(owner, me) : '[' + short(c.agent) + ']'}. Keep this edit small and local, don't reformat or rewrite the file, and re-Read it before further edits (its contents may change under you).`);
+        if (first) hookOut('PreToolUse', `mom: heads-up — ${rel} is also being edited right now by ${owner ? label(owner, me) : '[' + short(c.agent) + ']'}. Keep this edit small and local, don't reformat or rewrite the file, and re-Read it before further edits (its contents may change under you).`);
         return;
       }
       st.log({ agent: me, type: 'blocked', path: rel, holder: c.agent });
       const msg = [
-        `mediator: BLOCKED — ${rel} is currently held by agent ${owner ? label(owner, me) : '[' + short(c.agent) + ']'} (claimed ${ago(c.since)}${c.edits ? `, ${c.edits} edit${c.edits === 1 ? '' : 's'} so far` : ''}).${wholeFile ? ' Rewriting the whole file would discard their edits; use the Edit tool for a surgical change instead.' : ''}`,
+        `mom: BLOCKED — ${rel} is currently held by agent ${owner ? label(owner, me) : '[' + short(c.agent) + ']'} (claimed ${ago(c.since)}${c.edits ? `, ${c.edits} edit${c.edits === 1 ? '' : 's'} so far` : ''}).${wholeFile ? ' Rewriting the whole file would discard their edits; use the Edit tool for a surgical change instead.' : ''}`,
         `Do not edit this file now. Options: (a) do your other files first and come back; (b) run \`${st.cmd} wait ${rel}\` to block until it is released, then Read it again before editing; (c) if that agent is clearly gone, \`${st.cmd} claim --steal ${rel}\`.`,
       ].join('\n');
       process.stderr.write(msg + '\n');
@@ -637,12 +637,12 @@ function runHook(st, event) {
     case 'pre-bash': {
       ensureAgent(st, me); st.renewAll(me);
       const cmd = String((input.tool_input || {}).command || '');
-      if (!cmd || /\bmediator\b/.test(cmd)) return;
+      if (!cmd || /\bmom\b/.test(cmd)) return;
       const others = st.liveAgents().filter(a => a.id !== me);
       if (!others.length) return;
       for (const [re, why] of GIT_TREEWIDE) {
         if (re.test(cmd)) {
-          process.stderr.write(`mediator: BLOCKED — ${others.length} other agent${others.length === 1 ? ' is' : 's are'} working in this tree; ${why}.\n`);
+          process.stderr.write(`mom: BLOCKED — ${others.length} other agent${others.length === 1 ? ' is' : 's are'} working in this tree; ${why}.\n`);
           process.exit(2);
         }
       }
@@ -652,7 +652,7 @@ function runHook(st, event) {
         const hit = theirs.find(c => cmd.includes(c.path) || cmd.includes(path.basename(c.path)));
         if (hit) {
           const owner = present[hit.agent];
-          process.stderr.write(`mediator: BLOCKED — this command looks like it writes ${hit.path}, which is held by ${label(owner, me)}. Use the Edit tool (so ownership is tracked), do other work first, or \`${st.cmd} wait ${hit.path}\`.\n`);
+          process.stderr.write(`mom: BLOCKED — this command looks like it writes ${hit.path}, which is held by ${label(owner, me)}. Use the Edit tool (so ownership is tracked), do other work first, or \`${st.cmd} wait ${hit.path}\`.\n`);
           process.exit(2);
         }
       }
@@ -683,24 +683,24 @@ function runHook(st, event) {
   }
 }
 
-const HELP = `mediator ${VERSION} — keep concurrent AI coding agents from stepping on each other.
+const HELP = `mom ${VERSION} — keep concurrent AI coding agents from stepping on each other.
 
-Setup (once per repo):      mediator init            # .mediator/, Claude Code hooks, skill
+Setup (once per repo):      mom init            # .mom/, Claude Code hooks, skill
 Agent protocol:
-  mediator plan "<goal>" [files...]   announce what you're doing; reserve files
-  mediator status                     who is here, who holds what, recent notes
-  mediator note "<interface change>"  broadcast something others must know
-  mediator claim <files...>           reserve files (hooks do this for Edit/Write automatically)
-  mediator wait <file> [--timeout S]  block until a file is free, then claim it
-  mediator release <files...>|--all   hand files back (hooks do this at end of turn)
-  mediator who <file>                 who holds a file
-  mediator inbox                      updates from other agents since you last looked
-  mediator log [--n N]                raw event log
-  mediator gc                         drop dead agents / expired claims
-  mediator leave                      deregister yourself
-Hooks:                       mediator hook <session-start|prompt|pre-edit|pre-bash|post-tool|stop|session-end>
-Modes:  mediator init --mode advisory (default) | strict      (or MEDIATOR_MODE=...)
-Env: MEDIATOR_AGENT (identity), MEDIATOR_ROOT (repo root), MEDIATOR_TTL_SEC (reservation TTL, default 900)
+  mom plan "<goal>" [files...]   announce what you're doing; reserve files
+  mom status                     who is here, who holds what, recent notes
+  mom note "<interface change>"  broadcast something others must know
+  mom claim <files...>           reserve files (hooks do this for Edit/Write automatically)
+  mom wait <file> [--timeout S]  block until a file is free, then claim it
+  mom release <files...>|--all   hand files back (hooks do this at end of turn)
+  mom who <file>                 who holds a file
+  mom inbox                      updates from other agents since you last looked
+  mom log [--n N]                raw event log
+  mom gc                         drop dead agents / expired claims
+  mom leave                      deregister yourself
+Hooks:                       mom hook <session-start|prompt|pre-edit|pre-bash|post-tool|stop|session-end>
+Modes:  mom init --mode advisory (default) | strict      (or MOM_MODE=...)
+Env: MOM_AGENT (identity), MOM_ROOT (repo root), MOM_TTL_SEC (reservation TTL, default 900)
 `;
 
 // ---------------------------------------------------------------- main

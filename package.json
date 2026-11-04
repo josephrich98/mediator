@@ -1,8 +1,8 @@
 {
-  "name": "mediator-cli",
-  "version": "0.1.0",
+  "name": "mom-cli",
+  "version": "0.3.0",
   "description": "Keep concurrent AI coding agents from stepping on each other: atomic file claims, plans, and Claude Code hooks. Zero dependencies.",
-  "bin": { "mediator": "bin/mediator.js" },
+  "bin": { "mom": "bin/mom.js" },
   "files": ["bin", "skills", "README.md", "LICENSE"],
   "scripts": {
     "test": "node --test test/*.test.js",
@@ -11,9 +11,9 @@
   },
   "engines": { "node": ">=18" },
   "keywords": ["ai-agents", "claude-code", "codex", "cursor", "multi-agent", "coordination", "hooks", "file-locking", "developer-tools"],
-  "repository": { "type": "git", "url": "git+https://github.com/josephrich98/mediator.git" },
-  "homepage": "https://github.com/josephrich98/mediator#readme",
-  "bugs": { "url": "https://github.com/josephrich98/mediator/issues" },
+  "repository": { "type": "git", "url": "git+https://github.com/josephrich98/mom.git" },
+  "homepage": "https://github.com/josephrich98/mom#readme",
+  "bugs": { "url": "https://github.com/josephrich98/mom/issues" },
   "author": "Joseph Rich",
   "license": "MIT"
 }

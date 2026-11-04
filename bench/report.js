@@ -14,7 +14,7 @@ const metrics = [
   ['Assistant turns', r => r.turns, 1, ''],
   ['Tool errors', r => r.tool_errors, 1, ''],
   ['  of which stale-read / edit-mismatch', r => (r.error_kinds.stale_read || 0) + (r.error_kinds.edit_mismatch || 0), 1, ''],
-  ['  of which mediator BLOCKED', r => r.error_kinds.mediator_blocked || 0, 1, ''],
+  ['  of which mom BLOCKED', r => r.error_kinds.mom_blocked || 0, 1, ''],
   ['Times an agent saw a red test run', r => r.test_failures_seen || 0, 1, ''],
   ['Acceptance score', r => r.score, 1, ''],
   ['Trials with all tests passing', r => r.tests && r.tests.fail === 0 && r.tests.exit === 0 ? 1 : 0, 0, ''],
